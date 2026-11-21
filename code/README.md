@@ -1,0 +1,163 @@
+# COMP5423 Skill-Augmented Search Agent
+
+End-to-end search agent for the COMP5423 project over the BrowseComp-Plus fixed corpus.
+
+- **LLM:** DeepSeek-V4-Flash via SiliconFlow
+- **Retrieval (3 categories, one tool):** BM25 (sparse), BGE dense, Qwen3-Embedding (instruction-aware), fused with RRF when `method=auto`
+- **Supporting tools:** `visit`, `find_in_doc`
+- **Agent:** iterative ReAct loop + structured context management
+- **Skills:** `multi-clue-decompose`, `search-recovery` (auto-selected at runtime)
+- **UI:** Streamlit
+
+## Directory structure
+
+```
+code/
+  app.py                 # Streamlit UI
+  run_eval.py            # Batch predictions -> test_prediction.jsonl
+  requirements.txt
+  .env.example
+  skills/
+    multi-clue-decompose/SKILL.md
+    search-recovery/SKILL.md
+  scripts/
+    build_indexes.py
+  src/
+    config.py
+    llm/siliconflow.py
+    corpus/loader.py
+    retrieval/           # bm25, dense, instruct, unified
+    tools/               # search, visit, find_in_doc
+    agent/               # state, context, loop, skills_loader
+data/
+  validation.jsonl       # course validation split (in repo)
+  test.jsonl             # course test split (in repo)
+  raw/corpus.jsonl       # download from HuggingFace (not in repo)
+  indexes/               # built locally (not in repo)
+  chunks/                # chunk cache (not in repo)
+```
+
+## Environment setup
+
+```bash
+cd code
+python -m venv .venv
+
+# Windows PowerShell
+.venv\Scripts\Activate.ps1
+
+# Linux/macOS
+# source .venv/bin/activate
+
+pip install -r requirements.txt
+copy .env.example .env   # then edit SILICONFLOW_API_KEY
+```
+
+### LLM API key
+
+Set `SILICONFLOW_API_KEY` in `code/.env` or export it in your shell:
+
+```bash
+# PowerShell
+$env:SILICONFLOW_API_KEY="sk-..."
+
+# bash
+export SILICONFLOW_API_KEY=sk-...
+```
+
+Do **not** commit API keys. Model default: `deepseek-ai/DeepSeek-V4-Flash`.
+
+## Local data
+
+Eval splits ship with the repo:
+
+- `data/validation.jsonl`
+- `data/test.jsonl`
+
+Corpus and indexes are large (~14 GB) and are **not** in git. Each teammate downloads the corpus once and builds indexes locally.
+
+1. Download the document collection to `data/raw/corpus.jsonl` (one JSON object per line with `docid`, `text`, and optional `url`) from [Tevatron/browsecomp-plus-corpus](https://huggingface.co/datasets/Tevatron/browsecomp-plus-corpus).
+2. Build indexes (required once per machine):
+
+```bash
+cd code
+python scripts/build_indexes.py --stage all
+```
+
+Stages can be run separately:
+
+```bash
+python scripts/build_indexes.py --stage corpus
+python scripts/build_indexes.py --stage chunks
+python scripts/build_indexes.py --stage bm25
+python scripts/build_indexes.py --stage dense
+python scripts/build_indexes.py --stage instruct
+```
+
+Outputs land under `../data/indexes/` and `../data/chunks/`. Run `--stage instruct` if `faiss_qwen3` is missing (needed for full auto retrieval; use `--bm25-only` on eval if you skip it for now).
+
+## Run the UI
+
+```bash
+cd code
+streamlit run app.py
+```
+
+The UI shows the final answer, selected skill, evidence, tool-call trajectory, and token/tool counts.
+
+## Reproduce `test_prediction.jsonl`
+
+From `code/`:
+
+```bash
+python run_eval.py --split test --out ../test_prediction.jsonl
+```
+
+Validation with normalized EM:
+
+```bash
+python run_eval.py --split val --out val_prediction.jsonl --compute-em
+```
+
+Useful flags:
+
+- `--limit N` / `--offset K` for partial runs
+- `--bm25-only` to skip dense/instruct backends
+- `--api-key sk-...` to pass a key without `.env`
+
+Each output line matches the course schema:
+
+```json
+{
+  "id": "...",
+  "question": "...",
+  "answer": "...",
+  "trajectory": [...],
+  "tool_calls": 0,
+  "total_tokens": 0
+}
+```
+
+`tool_calls` counts agent-issued tool invocations. `total_tokens` sums SiliconFlow `usage.total_tokens` over LLM calls for that question.
+
+## Submission package (group)
+
+Recommended Canvas layout:
+
+```
+Group-X.zip
+|-- test_prediction.jsonl
+|-- code/          # this directory
+|-- Group-X-Report.pdf
+`-- Group-X-Video.mp4
+```
+
+Report / video / signatures are completed by the group (Overleaf template linked in the course PDF).
+
+## Design summary (for report)
+
+1. **Retrieval:** One `search` tool; internal BM25 + BGE + Qwen3 with optional RRF fusion.
+2. **Tools:** `visit` opens docs; `find_in_doc` greps inside a doc.
+3. **Agent loop:** Multi-step tool use conditioned on previous results (Feature A).
+4. **Context:** `AgentState` tracks visited docs/evidence/subqueries; tool outputs are deduped/truncated before LLM calls (Feature B).
+5. **Skills:** Catalog only in the base prompt; full `SKILL.md` loaded when auto-selected.

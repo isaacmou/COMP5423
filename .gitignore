@@ -1,0 +1,24 @@
+.env
+code/.env
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Heavy local data (rebuild from HuggingFace corpus)
+data/raw/
+data/chunks/
+data/indexes/
+*.sqlite
+*.index
+*.npy
+
+# Track course eval splits in the repo
+!data/
+!data/test.jsonl
+!data/validation.jsonl
+
+val_prediction.jsonl
+test_prediction.jsonl
+.DS_Store
+.streamlit/secrets.toml
