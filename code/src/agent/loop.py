@@ -7,6 +7,11 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Optional
 
 from src.agent.context import build_messages_for_llm, compress_tool_result
+from src.agent.response_utils import (
+    is_plausible_final_answer,
+    normalize_final_answer,
+    parse_dsml_tool_calls,
+)
 from src.agent.skills_loader import (
     Skill,
     auto_select_skill,
@@ -34,7 +39,7 @@ Available tools:
 
 Workflow:
 1) Decide whether a skill is useful from the skill catalog (names+descriptions only).
-2) If needed, call tools iteratively: search, then visit promising docs, reformulate queries based on evidence.
+2) Call tools iteratively via the API tool-calling interface: search, then visit promising docs, reformulate queries based on evidence.
 3) When confident, stop calling tools and reply with ONLY the final short answer string (no explanation).
 
 Rules:
@@ -42,7 +47,15 @@ Rules:
 - Avoid repeating the exact same search query.
 - Prefer visiting a few high-value documents over many shallow searches.
 - Keep answers concise and match the expected answer form (entity, date, number, short phrase).
+- Never write DSML/XML tool markup in your message content. Use structured tool calls only.
+- Do not output planning essays, clue lists, or "let me search" prose as the final answer.
 """
+
+_CONTINUE_NUDGE = (
+    "That was not a valid final answer. Use the structured tool interface to "
+    "search/visit documents (do not write XML/DSML). When done, reply with ONLY "
+    "the short final answer string."
+)
 
 
 @dataclass
@@ -97,6 +110,32 @@ class SearchAgent:
                 ]
             )
         return "\n".join(parts)
+
+    def _execute_tool_calls(
+        self,
+        tool_calls: list[dict[str, Any]],
+        trajectory: list[dict[str, Any]],
+        state: AgentState,
+        progress: ProgressCallback,
+    ) -> None:
+        for tc in tool_calls:
+            name = tc["function"]["name"]
+            raw_args = tc["function"].get("arguments") or "{}"
+            progress(f"Tool call: {name}({raw_args[:120]})")
+            try:
+                args = json.loads(raw_args)
+            except json.JSONDecodeError:
+                args = {}
+            raw_result = self.tools.execute(name, args)
+            compressed = compress_tool_result(name, raw_result, state)
+            trajectory.append(
+                {
+                    "role": "tool",
+                    "tool_call_id": tc.get("id"),
+                    "name": name,
+                    "content": compressed,
+                }
+            )
 
     def run(
         self,
@@ -160,44 +199,56 @@ class SearchAgent:
                 state=state,
             )
             progress(f"LLM step {step}/{self.max_steps}")
-            assistant = self.llm.chat(messages, tools=TOOL_DEFINITIONS)
+            # Force tool use until we have some evidence; then allow a short answer.
+            choice = "required" if self.tools.call_count == 0 else "auto"
+            try:
+                assistant = self.llm.chat(
+                    messages,
+                    tools=TOOL_DEFINITIONS,
+                    tool_choice=choice,
+                )
+            except Exception:
+                # Some backends reject tool_choice=required; fall back to auto.
+                if choice != "auto":
+                    progress("tool_choice=required unsupported; falling back to auto")
+                    assistant = self.llm.chat(messages, tools=TOOL_DEFINITIONS)
+                else:
+                    raise
             traj_assistant: dict[str, Any] = {
                 "role": "assistant",
                 "content": assistant.get("content"),
                 "usage": assistant.get("usage"),
             }
-            if assistant.get("tool_calls"):
-                traj_assistant["tool_calls"] = assistant["tool_calls"]
+            tool_calls = list(assistant.get("tool_calls") or [])
+            if not tool_calls:
+                recovered = parse_dsml_tool_calls(assistant.get("content"))
+                if recovered:
+                    progress(f"Recovered {len(recovered)} tool call(s) from DSML markup")
+                    tool_calls = recovered
+
+            if tool_calls:
+                traj_assistant["tool_calls"] = tool_calls
             trajectory.append(traj_assistant)
 
-            tool_calls = assistant.get("tool_calls") or []
-            if not tool_calls:
-                answer = (assistant.get("content") or "").strip()
-                # Strip common wrappers
-                if answer.lower().startswith("answer:"):
-                    answer = answer.split(":", 1)[1].strip()
+            if tool_calls:
+                self._execute_tool_calls(tool_calls, trajectory, state, progress)
+                continue
+
+            candidate = normalize_final_answer(assistant.get("content") or "")
+            if is_plausible_final_answer(
+                candidate,
+                tool_calls_made=self.tools.call_count,
+            ):
+                answer = candidate
                 state.candidate_answer = answer
                 progress(f"Final answer: {answer}")
                 break
 
-            for tc in tool_calls:
-                name = tc["function"]["name"]
-                raw_args = tc["function"].get("arguments") or "{}"
-                progress(f"Tool call: {name}({raw_args[:120]})")
-                try:
-                    args = json.loads(raw_args)
-                except json.JSONDecodeError:
-                    args = {}
-                raw_result = self.tools.execute(name, args)
-                compressed = compress_tool_result(name, raw_result, state)
-                trajectory.append(
-                    {
-                        "role": "tool",
-                        "tool_call_id": tc.get("id"),
-                        "name": name,
-                        "content": compressed,
-                    }
-                )
+            progress(
+                "Rejected non-answer / missing tools; continuing "
+                f"(preview={candidate[:80]!r})"
+            )
+            trajectory.append({"role": "user", "content": _CONTINUE_NUDGE})
         else:
             # Max steps reached without a plain-text answer: force a final answer
             progress("Max steps reached; requesting final answer")
@@ -210,7 +261,39 @@ class SearchAgent:
             )
             # Call without tools to force completion
             assistant = self.llm.chat(messages, tools=None)
-            answer = (assistant.get("content") or "").strip()
+            answer = normalize_final_answer(assistant.get("content") or "")
+            # If model still dumped markup, strip and keep empty rather than junk.
+            if not is_plausible_final_answer(
+                answer,
+                min_tool_calls=0,
+                tool_calls_made=self.tools.call_count,
+            ):
+                recovered = parse_dsml_tool_calls(assistant.get("content"))
+                if recovered:
+                    progress("Final turn still had DSML; executing recovered tools once")
+                    traj_assistant = {
+                        "role": "assistant",
+                        "content": assistant.get("content"),
+                        "tool_calls": recovered,
+                        "usage": assistant.get("usage"),
+                    }
+                    trajectory.append(traj_assistant)
+                    self._execute_tool_calls(recovered, trajectory, state, progress)
+                    messages = build_messages_for_llm(
+                        system_prompt=system_prompt
+                        + "\n\nOutput ONLY the final short answer now.",
+                        question=question,
+                        trajectory=trajectory,
+                        state=state,
+                    )
+                    assistant = self.llm.chat(messages, tools=None)
+                    answer = normalize_final_answer(assistant.get("content") or "")
+                if not is_plausible_final_answer(
+                    answer,
+                    min_tool_calls=0,
+                    tool_calls_made=max(self.tools.call_count, 1),
+                ):
+                    answer = ""
             trajectory.append(
                 {
                     "role": "assistant",

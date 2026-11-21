@@ -31,6 +31,7 @@ class SiliconFlowClient:
         tools: Optional[list[dict[str, Any]]] = None,
         temperature: float = 0.2,
         max_tokens: int = 2048,
+        tool_choice: Optional[str] = None,
     ) -> dict[str, Any]:
         kwargs: dict[str, Any] = {
             "model": self.model,
@@ -40,7 +41,7 @@ class SiliconFlowClient:
         }
         if tools:
             kwargs["tools"] = tools
-            kwargs["tool_choice"] = "auto"
+            kwargs["tool_choice"] = tool_choice or "auto"
 
         resp = self.client.chat.completions.create(**kwargs)
         self.llm_calls += 1
