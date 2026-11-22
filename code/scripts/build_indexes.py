@@ -125,16 +125,23 @@ def _encode_and_faiss(
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
     print(f"Loading encoder {model_name} on {device}...")
+    model_kwargs = {}
     if device == "cuda":
         print(f"  GPU: {torch.cuda.get_device_name(0)}")
         torch.cuda.empty_cache()
-    model = SentenceTransformer(model_name, device=device)
+        torch.backends.cuda.matmul.allow_tf32 = True
+        # FP16 roughly doubles throughput on consumer GPUs.
+        model_kwargs["torch_dtype"] = torch.float16
+    model = SentenceTransformer(
+        model_name, device=device, model_kwargs=model_kwargs or None
+    )
     model.max_seq_length = max_seq_length
     dim = model.get_embedding_dimension()
     index = faiss.IndexFlatIP(dim)
     print(
         f"Encoding {len(texts)} chunks "
-        f"(batch_size={batch_size}, max_seq_length={max_seq_length})"
+        f"(batch_size={batch_size}, max_seq_length={max_seq_length}, "
+        f"dtype={'fp16' if model_kwargs else 'fp32'})"
     )
 
     for start in tqdm(range(0, len(texts), batch_size), desc=f"Encode {model_name}"):
@@ -251,8 +258,8 @@ def main() -> None:
     if "instruct" in stages:
         if not CHUNKS_JSONL.exists():
             build_chunks(max_docs=args.max_docs)
-        # Slightly smaller than dense default; max_seq_length=512 limits VRAM.
-        instruct_bs = min(args.batch_size, 64) if args.batch_size else 32
+        # max_seq_length=512 keeps VRAM bounded; allow larger batches on GPU.
+        instruct_bs = args.batch_size if args.batch_size else 32
         build_instruct(batch_size=instruct_bs)
 
     print("Index build complete.")

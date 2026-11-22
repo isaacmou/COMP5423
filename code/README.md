@@ -2,11 +2,13 @@
 
 End-to-end search agent for the COMP5423 project over the BrowseComp-Plus fixed corpus.
 
-- **LLM:** DeepSeek-V4-Flash via SiliconFlow
-- **Retrieval (3 categories, one tool):** BM25 (sparse), BGE dense, Qwen3-Embedding (instruction-aware), fused with RRF when `method=auto`
+**繁體中文詳細說明：** [REPORT_ZH.md](../REPORT_ZH.md)
+
+- **LLM:** DeepSeek-V4-Flash via SiliconFlow (`CS5351/DeepSeek-V4-Flash`)
+- **Retrieval (3 categories, one tool):** BM25 (sparse), BGE dense, Qwen3-Embedding (instruction-aware), fused with RRF when `method=auto` (`DEFAULT_TOP_K=7`)
 - **Supporting tools:** `visit`, `find_in_doc`
-- **Agent:** iterative ReAct loop + structured context management
-- **Skills:** `multi-clue-decompose`, `search-recovery` (auto-selected at runtime)
+- **Agent:** iterative ReAct loop + structured context management; BM25 quote bootstrap; answer polish (dates / corp suffixes / prose strip); no hard evidence-substring gate
+- **Skills:** `multi-clue-decompose`, `search-recovery`, `constraint-verify` (auto-selected at runtime; mid-loop upgrade is recovery-only)
 - **UI:** Streamlit
 
 ## Directory structure
@@ -20,15 +22,17 @@ code/
   skills/
     multi-clue-decompose/SKILL.md
     search-recovery/SKILL.md
+    constraint-verify/SKILL.md
   scripts/
     build_indexes.py
+    run_random_val.py
   src/
     config.py
     llm/siliconflow.py
     corpus/loader.py
     retrieval/           # bm25, dense, instruct, unified
     tools/               # search, visit, find_in_doc
-    agent/               # state, context, loop, skills_loader
+    agent/               # state, context, loop, skills_loader, response_utils
 data/
   validation.jsonl       # course validation split (in repo)
   test.jsonl             # course test split (in repo)
@@ -65,7 +69,7 @@ $env:SILICONFLOW_API_KEY="sk-..."
 export SILICONFLOW_API_KEY=sk-...
 ```
 
-Do **not** commit API keys. Model default: `deepseek-ai/DeepSeek-V4-Flash`.
+Do **not** commit API keys. Model default: `CS5351/DeepSeek-V4-Flash` (SiliconFlow / course gateway).
 
 ## Local data
 
@@ -158,6 +162,7 @@ Report / video / signatures are completed by the group (Overleaf template linked
 
 1. **Retrieval:** One `search` tool; internal BM25 + BGE + Qwen3 with optional RRF fusion.
 2. **Tools:** `visit` opens docs; `find_in_doc` greps inside a doc.
-3. **Agent loop:** Multi-step tool use conditioned on previous results (Feature A).
+3. **Agent loop:** Multi-step tool use conditioned on previous results (Feature A); auto-visit at most one unvisited hit; step-1 BM25 search for distinctive quoted clues.
 4. **Context:** `AgentState` tracks visited docs/evidence/subqueries; tool outputs are deduped/truncated before LLM calls (Feature B).
-5. **Skills:** Catalog only in the base prompt; full `SKILL.md` loaded when auto-selected.
+5. **Skills:** Catalog only in the base prompt; full `SKILL.md` loaded when auto-selected (`constraint-verify` for verification-heavy prompts).
+6. **Answer polish:** `normalize_final_answer` rewrites EM-friendly forms (e.g. `DD/MM/YYYY`, strip Ltd/Inc) and rejects explanation prose; acceptance does **not** use a hard evidence-substring gate.

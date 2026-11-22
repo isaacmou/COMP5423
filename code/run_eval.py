@@ -115,7 +115,14 @@ def main() -> None:
             qid = str(row.get("id") or row.get("query_id"))
             question = row.get("question") or row.get("query") or ""
             gold: Optional[str] = row.get("answer")
-            print(f"[{i + 1}/{len(rows)}] id={qid}")
+            def _safe_print(msg: str) -> None:
+                # Windows consoles (e.g. cp950) can choke on non-ASCII answers.
+                try:
+                    print(msg)
+                except UnicodeEncodeError:
+                    print(msg.encode("ascii", errors="replace").decode("ascii"))
+
+            _safe_print(f"[{i + 1}/{len(rows)}] id={qid}")
             try:
                 result = agent.run(question)
                 rec = prediction_record(
@@ -127,7 +134,7 @@ def main() -> None:
                     total_tokens=result.total_tokens,
                 )
             except Exception as exc:  # noqa: BLE001
-                print(f"  ERROR: {exc}")
+                _safe_print(f"  ERROR: {exc}")
                 rec = prediction_record(
                     qid=qid,
                     question=question,
@@ -147,10 +154,10 @@ def main() -> None:
                 total_with_gold += 1
                 if normalize_answer(rec["answer"]) == normalize_answer(gold):
                     correct += 1
-                    print("  EM=1")
+                    _safe_print("  EM=1")
                 else:
-                    print(f"  EM=0 pred={rec['answer']!r} gold={gold!r}")
-            print(
+                    _safe_print(f"  EM=0 pred={rec['answer']!r} gold={gold!r}")
+            _safe_print(
                 f"  tools={rec['tool_calls']} tokens={rec['total_tokens']} "
                 f"answer={rec['answer'][:80]!r}"
             )

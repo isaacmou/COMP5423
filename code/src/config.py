@@ -32,14 +32,14 @@ VAL_JSONL = DATA_DIR / "validation.jsonl"
 TEST_JSONL = DATA_DIR / "test.jsonl"
 
 SILICONFLOW_BASE_URL = os.environ.get(
-    "SILICONFLOW_BASE_URL", "https://api.siliconflow.cn/v1"
+    "SILICONFLOW_BASE_URL", "https://llm.cs.cityu.edu.hk/v1"
 )
 SILICONFLOW_MODEL = os.environ.get(
-    "SILICONFLOW_MODEL", "deepseek-ai/DeepSeek-V4-Flash"
+    "SILICONFLOW_MODEL", "CS5351/DeepSeek-V4-Flash"
 )
 
 # Retrieval / agent defaults (efficiency-oriented)
-DEFAULT_TOP_K = 5
+DEFAULT_TOP_K = 7
 SNIPPET_CHARS = 512
 VISIT_MAX_CHARS = 8000
 FIND_MAX_MATCHES = 8

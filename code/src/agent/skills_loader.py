@@ -83,6 +83,22 @@ def auto_select_skill(question: str, state: AgentState, skills: list[Skill]) -> 
     if state.weak_search_streak >= 1 and "search-recovery" in names:
         return "search-recovery"
 
+    # Verification-heavy questions: many enumerated constraints / verify wording
+    verify_signals = [
+        r"\bverify\b",
+        r"\bconfirm\b",
+        r"\bsatisf(?:y|ies|ying)\b",
+        r"\bfollowing (?:statements|conditions|criteria|details)\b",
+        r"\ball of the following\b",
+        r"\beach of the following\b",
+        r"\bcheck(?:s|ing)? (?:that|whether|against)\b",
+    ]
+    enum_hits = len(re.findall(r"(?:^|[\n;\s])\d+[\.\)]\s", question))
+    if "constraint-verify" in names and (
+        any(re.search(p, q) for p in verify_signals) or enum_hits >= 4
+    ):
+        return "constraint-verify"
+
     # Multi-clue / multi-constraint questions
     multi_clue_signals = [
         r"\band\b",
@@ -113,4 +129,17 @@ def auto_select_skill(question: str, state: AgentState, skills: list[Skill]) -> 
     if "multi-clue-decompose" in names and word_count >= 20:
         return "multi-clue-decompose"
 
+    return None
+
+
+def maybe_upgrade_skill(state: AgentState, skills: list[Skill]) -> Optional[str]:
+    """
+    Mid-loop skill upgrade based on search progress.
+
+    Only auto-upgrade to search-recovery on weak searches.
+    constraint-verify remains available via catalog/auto_select, but is not forced.
+    """
+    names = {s.name for s in skills}
+    if state.weak_search_streak >= 2 and "search-recovery" in names:
+        return "search-recovery"
     return None

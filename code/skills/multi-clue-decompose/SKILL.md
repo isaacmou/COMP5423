@@ -9,14 +9,16 @@ description: Decompose multi-constraint or multi-hop questions into ordered sub-
 Apply this skill when a question contains several interdependent constraints (entities, dates, roles, locations, titles) that are unlikely to match a single keyword search.
 
 ## Procedure
-1. **List clues.** Mentally extract 2–4 atomic clues from the question (entities, events, attributes). Do not answer yet.
-2. **Search the easiest clue first.** Call `search` with a short, concrete subquery (`method="auto"`, `top_k=5`). Prefer named entities and distinctive phrases over the full question.
-3. **Visit top documents.** Use `visit` on 1–2 highest-scoring `doc_id`s. If the text is long, use `find_in_doc` with a distinctive keyword.
-4. **Bridge to the next clue.** Rewrite the next subquery using facts confirmed in visited text (names, titles, dates). Avoid repeating an identical previous query.
-5. **Cross-check.** Confirm the candidate answer satisfies every original constraint before stopping.
-6. **Finalize.** When evidence is sufficient, reply with only the short final answer string.
+1. **List atomic clues.** Mentally extract 2–4 *distinctive* clues (rare phrases, years+venues, quoted titles, unusual attributes). Do not answer yet.
+2. **Search one distinctive clue at a time.** Call `search` with a short subquery (`method="auto"`, `top_k=5`). Prefer the rarest phrase, Britannica quote fragment, year+event, or unique attribute — **never** paste a long paraphrase of the whole question. For a rare quoted span, prefer one `method="bm25"` search.
+3. **Visit one top document.** Use `visit` on the highest-scoring unvisited `doc_id` before another `search`. If the text is long, use `find_in_doc` for a distinctive keyword, date, or number (for date questions, search day/month/year digits).
+4. **Score the candidate against constraints.** After each visit, note which original constraints are supported vs violated. If a named person/entity fails any hard constraint (dates, roles, locations), **discard that candidate** and search a *different* clue — do not keep visiting the same wrong cluster.
+5. **Bridge with confirmed facts only.** Rewrite the next subquery using facts that appear in visited text. Avoid repeating an identical previous query.
+6. **Ground before finalize.** The final short answer string must appear in visited evidence (or `find_in_doc` hits). Prefer confirming ≥2 independent constraints in visited text.
+7. **Finalize.** Reply with ONLY the short final answer string. For dates prefer `DD/MM/YYYY`; for companies omit trailing Ltd/Inc/LLC unless essential; no markdown or explanation prose.
 
 ## Anti-patterns
 - Dumping the entire original question into every search call.
-- Visiting more than three documents for the same subquery without reformulating.
+- Visiting many documents from one bad search without reformulating.
+- Committing to a person/name that never appears in visited document text.
 - Ending with a long explanation instead of the answer span.
